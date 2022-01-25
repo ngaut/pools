@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ngaut/sync2"
+	atomicutil "go.uber.org/atomic"
 )
 
 var (
@@ -31,12 +31,12 @@ type Resource interface {
 type ResourcePool struct {
 	resources   chan resourceWrapper
 	factory     Factory
-	capacity    sync2.AtomicInt64
-	idleTimeout sync2.AtomicDuration
+	capacity    atomicutil.Int64
+	idleTimeout atomicutil.Duration
 
 	// stats
-	waitCount sync2.AtomicInt64
-	waitTime  sync2.AtomicDuration
+	waitCount atomicutil.Int64
+	waitTime  atomicutil.Duration
 }
 
 type resourceWrapper struct {
@@ -56,8 +56,8 @@ func NewResourcePool(factory Factory, capacity, maxCap int, idleTimeout time.Dur
 	rp := &ResourcePool{
 		resources:   make(chan resourceWrapper, maxCap),
 		factory:     factory,
-		capacity:    sync2.AtomicInt64(capacity),
-		idleTimeout: sync2.AtomicDuration(idleTimeout),
+		capacity:    *atomicutil.NewInt64(int64(capacity)),
+		idleTimeout: *atomicutil.NewDuration(idleTimeout),
 	}
 	for i := 0; i < capacity; i++ {
 		rp.resources <- resourceWrapper{}
@@ -74,7 +74,7 @@ func (rp *ResourcePool) Close() {
 }
 
 func (rp *ResourcePool) IsClosed() (closed bool) {
-	return rp.capacity.Get() == 0
+	return rp.capacity.Load() == 0
 }
 
 // Get will return the next available resource. If capacity
@@ -110,7 +110,7 @@ func (rp *ResourcePool) get(wait bool) (resource Resource, err error) {
 	}
 
 	// Unwrap
-	timeout := rp.idleTimeout.Get()
+	timeout := rp.idleTimeout.Load()
 	if wrapper.resource != nil && timeout > 0 && wrapper.timeUsed.Add(timeout).Sub(time.Now()) < 0 {
 		wrapper.resource.Close()
 		wrapper.resource = nil
@@ -155,19 +155,30 @@ func (rp *ResourcePool) SetCapacity(capacity int) error {
 	// if old capacity is non-zero.
 	var oldcap int
 	for {
-		oldcap = int(rp.capacity.Get())
+		oldcap = int(rp.capacity.Load())
 		if oldcap == 0 {
 			return CLOSED_ERR
 		}
 		if oldcap == capacity {
 			return nil
 		}
-		if rp.capacity.CompareAndSwap(int64(oldcap), int64(capacity)) {
+		if rp.capacity.CAS(int64(oldcap), int64(capacity)) {
 			break
 		}
 	}
-
-	if capacity < oldcap {
+	if capacity == 0 {
+		for {
+			select {
+			case wrapper := <-rp.resources:
+				if wrapper.resource != nil {
+					wrapper.resource.Close()
+				}
+			default:
+				close(rp.resources)
+				return nil
+			}
+		}
+	} else if capacity < oldcap {
 		for i := 0; i < oldcap-capacity; i++ {
 			wrapper := <-rp.resources
 			if wrapper.resource != nil {
@@ -179,9 +190,6 @@ func (rp *ResourcePool) SetCapacity(capacity int) error {
 			rp.resources <- resourceWrapper{}
 		}
 	}
-	if capacity == 0 {
-		close(rp.resources)
-	}
 	return nil
 }
 
@@ -191,7 +199,7 @@ func (rp *ResourcePool) recordWait(start time.Time) {
 }
 
 func (rp *ResourcePool) SetIdleTimeout(idleTimeout time.Duration) {
-	rp.idleTimeout.Set(idleTimeout)
+	rp.idleTimeout.Store(idleTimeout)
 }
 
 func (rp *ResourcePool) StatsJSON() string {
@@ -204,7 +212,7 @@ func (rp *ResourcePool) Stats() (capacity, available, maxCap, waitCount int64, w
 }
 
 func (rp *ResourcePool) Capacity() int64 {
-	return rp.capacity.Get()
+	return rp.capacity.Load()
 }
 
 func (rp *ResourcePool) Available() int64 {
@@ -216,13 +224,13 @@ func (rp *ResourcePool) MaxCap() int64 {
 }
 
 func (rp *ResourcePool) WaitCount() int64 {
-	return rp.waitCount.Get()
+	return rp.waitCount.Load()
 }
 
 func (rp *ResourcePool) WaitTime() time.Duration {
-	return rp.waitTime.Get()
+	return rp.waitTime.Load()
 }
 
 func (rp *ResourcePool) IdleTimeout() time.Duration {
-	return rp.idleTimeout.Get()
+	return rp.idleTimeout.Load()
 }

@@ -10,7 +10,7 @@ import (
 )
 
 func TestPool(t *testing.T) {
-	lastId.Set(0)
+	lastId.Store(0)
 	p := NewRoundRobin(5, time.Duration(10e9))
 	p.Open(PoolFactory)
 	defer p.Close()
