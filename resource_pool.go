@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"time"
 
-	atomicutil "go.uber.org/atomic"
+	"go.uber.org/atomic"
 )
 
 var (
@@ -31,12 +31,12 @@ type Resource interface {
 type ResourcePool struct {
 	resources   chan resourceWrapper
 	factory     Factory
-	capacity    atomicutil.Int64
-	idleTimeout atomicutil.Duration
+	capacity    atomic.Int64
+	idleTimeout atomic.Duration
 
 	// stats
-	waitCount atomicutil.Int64
-	waitTime  atomicutil.Duration
+	waitCount atomic.Int64
+	waitTime  atomic.Duration
 }
 
 type resourceWrapper struct {
@@ -56,8 +56,8 @@ func NewResourcePool(factory Factory, capacity, maxCap int, idleTimeout time.Dur
 	rp := &ResourcePool{
 		resources:   make(chan resourceWrapper, maxCap),
 		factory:     factory,
-		capacity:    *atomicutil.NewInt64(int64(capacity)),
-		idleTimeout: *atomicutil.NewDuration(idleTimeout),
+		capacity:    *atomic.NewInt64(int64(capacity)),
+		idleTimeout: *atomic.NewDuration(idleTimeout),
 	}
 	for i := 0; i < capacity; i++ {
 		rp.resources <- resourceWrapper{}
